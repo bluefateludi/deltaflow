@@ -1,6 +1,6 @@
-# CursorFlow architecture
+# DeltaFlow architecture
 
-CursorFlow is a lightweight incremental synchronization CLI for teams that need
+DeltaFlow is a lightweight incremental synchronization CLI for teams that need
 reliable scheduled data movement without operating a full CDC platform.
 
 The reference use case copies an operational `orders` table into a local
@@ -23,7 +23,7 @@ cursor atomically.
 ## Incremental cursor
 
 `updated_at` alone is not a safe cursor: multiple rows can have the same update
-time. CursorFlow uses the tuple `(updated_at, id)` and reads with keyset
+time. DeltaFlow uses the tuple `(updated_at, id)` and reads with keyset
 pagination:
 
 ```sql
@@ -65,4 +65,3 @@ than a claim of distributed exactly-once delivery.
 - Replaying a committed batch does not duplicate target rows.
 - A simulated interruption resumes at the last committed cursor.
 - A stale source version does not overwrite a newer target version.
-
