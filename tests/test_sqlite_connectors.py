@@ -129,6 +129,44 @@ class SQLiteConnectorTests(unittest.TestCase):
         self.assertEqual(page.records, tuple(records[2:]))
         self.assertEqual(page.next_cursor, records[-1].cursor)
 
+    def test_source_does_not_modify_source_schema(self) -> None:
+        source = SQLiteOrderSource(self.source_path)
+
+        source.read_batch(None, 1)
+
+        with sqlite3.connect(self.source_path) as connection:
+            indexes = connection.execute("PRAGMA index_list(orders)").fetchall()
+
+        self.assertEqual([row[1] for row in indexes if row[3] == "c"], [])
+
+    def test_keyset_query_plan_uses_composite_index_without_temp_sort(self) -> None:
+        with sqlite3.connect(self.source_path) as connection:
+            connection.execute(
+                "CREATE INDEX idx_orders_updated_at_id ON orders(updated_at, id)"
+            )
+        source = SQLiteOrderSource(self.source_path)
+
+        initial_plan = source.explain_query_plan(None, 100)
+        incremental_plan = source.explain_query_plan(
+            Cursor("2026-08-04T10:00:00Z", "order-001"), 100
+        )
+
+        self.assertTrue(
+            any("USING INDEX idx_orders_updated_at_id" in step for step in initial_plan),
+            initial_plan,
+        )
+        self.assertTrue(
+            any(
+                "SEARCH orders USING INDEX idx_orders_updated_at_id" in step
+                for step in incremental_plan
+            ),
+            incremental_plan,
+        )
+        self.assertFalse(
+            any("TEMP B-TREE" in step for step in initial_plan + incremental_plan),
+            (initial_plan, incremental_plan),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,18 @@ class DemoAndCLITests(unittest.TestCase):
         self.assertEqual([row[1] for row in rows[-2:]], ["fulfilled", "fulfilled"])
         self.assertEqual([row[0] for row in rows[-2:]], ["order-00000000", "order-00000001"])
 
+    def test_init_demo_creates_composite_keyset_index(self) -> None:
+        init_demo(self.source, 1)
+
+        with sqlite3.connect(self.source) as connection:
+            indexes = connection.execute("PRAGMA index_list(orders)").fetchall()
+            columns = connection.execute(
+                "PRAGMA index_info(idx_orders_updated_at_id)"
+            ).fetchall()
+
+        self.assertIn("idx_orders_updated_at_id", [row[1] for row in indexes])
+        self.assertEqual([row[2] for row in columns], ["updated_at", "id"])
+
     def test_init_demo_command_returns_json(self) -> None:
         code, result = self.run_cli("init-demo", str(self.source), "--count", "3")
         self.assertEqual(code, 0)

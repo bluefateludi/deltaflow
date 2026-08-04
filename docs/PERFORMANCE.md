@@ -5,6 +5,10 @@ pipeline together. Its default matrix covers 100,000 and 1,000,000 initial rows
 at batch sizes 100, 1,000, 5,000, and 10,000. Every case then appends 10,000
 rows, runs an incremental sync, and measures a no-op sync.
 
+The generated source schema includes `idx_orders_updated_at_id` on
+`(updated_at, id)`. This is fixture setup only: the source connector never
+creates indexes or otherwise changes a source database.
+
 Run the complete matrix from the repository root:
 
 ```bash

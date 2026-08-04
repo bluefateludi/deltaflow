@@ -29,8 +29,7 @@ pagination:
 ```sql
 SELECT ...
 FROM orders
-WHERE updated_at > :updated_at
-   OR (updated_at = :updated_at AND id > :id)
+WHERE (updated_at, id) > (:updated_at, :id)
 ORDER BY updated_at, id
 LIMIT :batch_size;
 ```
