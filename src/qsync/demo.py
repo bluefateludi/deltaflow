@@ -135,16 +135,44 @@ def inspect_order_target(path: str | Path) -> dict[str, object]:
             raise ValueError(f"target database has no orders table: {database}")
         rows = int(connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
         checkpoints: list[dict[str, object]] = []
-        if "_sync_checkpoints" in tables:
+        if "_qsync_checkpoints" in tables:
+            columns = connection.execute(
+                'PRAGMA table_info("_qsync_checkpoints")'
+            ).fetchall()
+            schema = [
+                (str(name), str(column_type).upper(), bool(not_null), int(primary_key))
+                for _, name, column_type, not_null, _, primary_key in columns
+            ]
+            expected = [
+                ("source_id", "TEXT", False, 1),
+                ("updated_at", "TEXT", True, 0),
+                ("id", "TEXT", True, 0),
+            ]
+            if schema != expected:
+                found = ", ".join(
+                    f"{name} {column_type or '<no type>'}"
+                    + (" PRIMARY KEY" if primary_key else "")
+                    + (" NOT NULL" if not_null else "")
+                    for name, column_type, not_null, primary_key in schema
+                ) or "no columns"
+                raise ValueError(
+                    "unsupported checkpoint schema for _qsync_checkpoints: "
+                    "expected source_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, "
+                    f"id TEXT NOT NULL; found {found}"
+                )
             checkpoints = [
                 {
                     "source_id": source_id,
                     "cursor": {"updated_at": updated_at, "id": cursor_id},
-                    "updated_at": committed_at,
                 }
-                for source_id, updated_at, cursor_id, committed_at in connection.execute(
-                    "SELECT source_id, cursor_updated_at, cursor_id, updated_at "
-                    "FROM _sync_checkpoints ORDER BY source_id"
+                for source_id, updated_at, cursor_id in connection.execute(
+                    "SELECT source_id, updated_at, id "
+                    "FROM _qsync_checkpoints ORDER BY source_id"
                 )
             ]
+        elif "_sync_checkpoints" in tables:
+            raise ValueError(
+                "unsupported legacy checkpoint table _sync_checkpoints; "
+                "expected _qsync_checkpoints(source_id, updated_at, id)"
+            )
     return {"target": str(database), "rows": rows, "checkpoints": checkpoints}

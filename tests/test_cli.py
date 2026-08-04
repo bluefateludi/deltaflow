@@ -44,6 +44,12 @@ class DemoAndCLITests(unittest.TestCase):
             code = main(list(args))
         return code, json.loads(output.getvalue())
 
+    def run_cli_error(self, *args: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            code = main(list(args))
+        return code, output.getvalue()
+
     def test_init_demo_create_append_and_update(self) -> None:
         first = init_demo(self.source, 5)
         second = init_demo(self.source, 2, append=True, updates=2)
@@ -97,6 +103,61 @@ class DemoAndCLITests(unittest.TestCase):
         self.assertEqual(result["cursor"]["id"], "1")
 
     def test_status_command_reports_rows_and_cursor(self) -> None:
+        code, initialized = self.run_cli(
+            "init-demo", str(self.source), "--count", "3"
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(initialized["orders_total"], 3)
+
+        code, synced = self.run_cli(
+            "sync", str(self.source), str(self.target), "--batch-size", "2"
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(synced["rows_written"], 3)
+
+        code, result = self.run_cli("status", str(self.target))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["rows"], 3)
+        self.assertEqual(
+            result["checkpoints"],
+            [
+                {
+                    "source_id": f"sqlite:orders:{self.source.resolve()}",
+                    "cursor": {
+                        "updated_at": "2026-01-01T00:00:02Z",
+                        "id": "order-00000002",
+                    },
+                }
+            ],
+        )
+
+    def test_status_command_returns_no_checkpoints_when_table_is_absent(self) -> None:
+        with sqlite3.connect(self.target) as connection:
+            connection.execute("CREATE TABLE orders(id TEXT PRIMARY KEY)")
+            connection.execute("INSERT INTO orders VALUES ('order-1')")
+        code, result = self.run_cli("status", str(self.target))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["rows"], 1)
+        self.assertEqual(result["checkpoints"], [])
+
+    def test_status_command_rejects_damaged_checkpoint_schema(self) -> None:
+        with sqlite3.connect(self.target) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE orders(id TEXT PRIMARY KEY);
+                CREATE TABLE _qsync_checkpoints(
+                    source_id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+
+        code, error = self.run_cli_error("status", str(self.target))
+        self.assertEqual(code, 2)
+        self.assertIn("unsupported checkpoint schema for _qsync_checkpoints", error)
+        self.assertIn("expected source_id TEXT PRIMARY KEY", error)
+
+    def test_status_command_rejects_legacy_checkpoint_schema(self) -> None:
         with sqlite3.connect(self.target) as connection:
             connection.executescript(
                 """
@@ -107,16 +168,12 @@ class DemoAndCLITests(unittest.TestCase):
                     cursor_id TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                INSERT INTO orders VALUES ('order-1');
-                INSERT INTO _sync_checkpoints VALUES (
-                    'sqlite://source#orders', '2026-01-01T00:00:00Z', 'order-1', '2026-01-02 00:00:00'
-                );
                 """
             )
-        code, result = self.run_cli("status", str(self.target))
-        self.assertEqual(code, 0)
-        self.assertEqual(result["rows"], 1)
-        self.assertEqual(result["checkpoints"][0]["cursor"]["id"], "order-1")
+
+        code, error = self.run_cli_error("status", str(self.target))
+        self.assertEqual(code, 2)
+        self.assertIn("unsupported legacy checkpoint table _sync_checkpoints", error)
 
 
 if __name__ == "__main__":
