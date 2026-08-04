@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shell-friendly DeltaFlow benchmark using the public SQLite connectors."""
+"""Run the reproducible DeltaFlow SQLite benchmark matrix."""
 
 from __future__ import annotations
 
@@ -11,21 +11,43 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterable
+
+
+DEFAULT_ROWS = (100_000, 1_000_000)
+DEFAULT_BATCH_SIZES = (100, 1_000, 5_000, 10_000)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark initial, incremental, and no-op order synchronization."
+        description="Benchmark DeltaFlow across deterministic SQLite workloads."
     )
-    parser.add_argument("--rows", type=int, default=100_000, help="initial order count")
     parser.add_argument(
-        "--incremental-rows", type=int, default=10_000, help="orders appended before run two"
+        "--rows",
+        type=int,
+        nargs="+",
+        default=DEFAULT_ROWS,
+        help="initial order counts (default: 100000 1000000)",
     )
-    parser.add_argument("--batch-size", type=int, default=5_000)
+    parser.add_argument(
+        "--batch-sizes",
+        "--batch-size",
+        type=int,
+        nargs="+",
+        default=DEFAULT_BATCH_SIZES,
+        dest="batch_sizes",
+        help="batch sizes; --batch-size remains a compatible alias (default: 100 1000 5000 10000)",
+    )
+    parser.add_argument(
+        "--incremental-rows",
+        type=int,
+        default=10_000,
+        help="orders appended before each incremental run (default: 10000)",
+    )
     parser.add_argument(
         "--workspace",
         type=Path,
-        help="keep benchmark databases here (directory must not already contain them)",
+        help="keep benchmark databases under this directory",
     )
     return parser.parse_args()
 
@@ -65,62 +87,108 @@ def insert_orders(path: Path, start: int, count: int, chunk_size: int = 10_000) 
     return time.perf_counter() - started
 
 
-def run_benchmark(args: argparse.Namespace, root: Path) -> dict[str, object]:
-    try:
-        from qsync.connectors.sqlite_sink import SQLiteSink
-        from qsync.connectors.sqlite_source import SQLiteSource
-        from qsync.pipeline import run_sync
-    except ModuleNotFoundError as exc:
-        if exc.name != "qsync.connectors":
-            raise
-        raise RuntimeError(
-            "SQLite connector seam is not integrated: expected "
-            "qsync.connectors.sqlite_source.SQLiteSource and "
-            "qsync.connectors.sqlite_sink.SQLiteSink"
-        ) from exc
+def serialize_stats(stats: object) -> dict[str, object]:
+    """Return stable, path-independent sync metrics in a fixed field order."""
 
-    source_path = root / "commerce.db"
-    target_path = root / "analytics.db"
+    raw = stats.as_dict()  # type: ignore[attr-defined]
+    return {
+        "rows_read": raw["rows_read"],
+        "rows_written": raw["rows_written"],
+        "batches": raw["batches"],
+        "elapsed_seconds": raw["elapsed_seconds"],
+        "rows_per_second": raw["rows_per_second"],
+        "start_cursor": raw["start_cursor"],
+        "end_cursor": raw["end_cursor"],
+    }
+
+
+def run_case(rows: int, incremental_rows: int, batch_size: int, root: Path) -> dict[str, object]:
+    from qsync.connectors.sqlite_sink import SQLiteSink
+    from qsync.connectors.sqlite_source import SQLiteSource
+    from qsync.pipeline import run_sync
+
+    source_path = root / "source.db"
+    target_path = root / "target.db"
     if source_path.exists() or target_path.exists():
         raise RuntimeError(f"refusing to overwrite benchmark databases in {root}")
     root.mkdir(parents=True, exist_ok=True)
+
     create_source(source_path)
-    fixture_seconds = insert_orders(source_path, 0, args.rows)
+    initial_fixture_seconds = insert_orders(source_path, 0, rows)
     source = SQLiteSource(source_path)
     sink = SQLiteSink(target_path)
+    initial = run_sync(source, sink, batch_size=batch_size)
 
-    initial = run_sync(source, sink, batch_size=args.batch_size)
-    incremental_fixture_seconds = insert_orders(source_path, args.rows, args.incremental_rows)
-    incremental = run_sync(source, sink, batch_size=args.batch_size)
-    noop = run_sync(source, sink, batch_size=args.batch_size)
+    incremental_fixture_seconds = insert_orders(source_path, rows, incremental_rows)
+    incremental = run_sync(source, sink, batch_size=batch_size)
+    noop = run_sync(source, sink, batch_size=batch_size)
 
     return {
         "config": {
-            "rows": args.rows,
-            "incremental_rows": args.incremental_rows,
-            "batch_size": args.batch_size,
+            "rows": rows,
+            "incremental_rows": incremental_rows,
+            "batch_size": batch_size,
         },
-        "fixture_seconds": round(fixture_seconds + incremental_fixture_seconds, 6),
-        "initial": initial.as_dict(),
-        "incremental": incremental.as_dict(),
-        "noop": noop.as_dict(),
+        "fixture": {
+            "initial_seconds": round(initial_fixture_seconds, 6),
+            "incremental_seconds": round(incremental_fixture_seconds, 6),
+        },
+        "initial": serialize_stats(initial),
+        "incremental": serialize_stats(incremental),
+        "noop": serialize_stats(noop),
     }
+
+
+def run_matrix(
+    rows_values: Iterable[int],
+    batch_sizes: Iterable[int],
+    incremental_rows: int,
+    root: Path,
+) -> dict[str, object]:
+    cases = []
+    for rows in rows_values:
+        for batch_size in batch_sizes:
+            case_root = root / f"rows-{rows}-batch-{batch_size}"
+            print(
+                f"benchmark: running rows={rows} batch_size={batch_size}",
+                file=sys.stderr,
+            )
+            case = run_case(rows, incremental_rows, batch_size, case_root)
+            cases.append(case)
+            print(
+                f"benchmark: completed rows={rows} batch_size={batch_size}",
+                file=sys.stderr,
+            )
+    return {"schema_version": 1, "benchmark": "deltaflow-sqlite-orders", "cases": cases}
 
 
 def main() -> int:
     args = parse_args()
-    if args.rows < 0 or args.incremental_rows < 0 or args.batch_size < 1:
-        print("benchmark: counts cannot be negative and batch-size must be positive", file=sys.stderr)
+    if any(rows < 0 for rows in args.rows) or args.incremental_rows < 0:
+        print("benchmark: row counts cannot be negative", file=sys.stderr)
         return 2
+    if any(batch_size < 1 for batch_size in args.batch_sizes):
+        print("benchmark: batch sizes must be positive", file=sys.stderr)
+        return 2
+    if len(set(args.rows)) != len(args.rows) or len(set(args.batch_sizes)) != len(
+        args.batch_sizes
+    ):
+        print("benchmark: rows and batch sizes cannot contain duplicates", file=sys.stderr)
+        return 2
+
     try:
         if args.workspace is not None:
-            result = run_benchmark(args, args.workspace.expanduser().resolve())
+            root = args.workspace.expanduser().resolve()
+            result = run_matrix(args.rows, args.batch_sizes, args.incremental_rows, root)
         else:
             with tempfile.TemporaryDirectory(prefix="deltaflow-benchmark-") as directory:
-                result = run_benchmark(args, Path(directory))
-    except (OSError, RuntimeError, sqlite3.Error) as exc:
+                result = run_matrix(
+                    args.rows, args.batch_sizes, args.incremental_rows, Path(directory)
+                )
+    except (ImportError, OSError, RuntimeError, sqlite3.Error) as exc:
         print(f"benchmark: {exc}", file=sys.stderr)
         return 2
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
