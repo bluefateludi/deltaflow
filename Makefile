@@ -1,12 +1,24 @@
-.PHONY: test demo clean
+.PHONY: install test compile check demo clean
 
-test:
-	PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHON ?= python3
+PIP ?= $(PYTHON) -m pip
 
-demo:
-	PYTHONPATH=src python3 -m qsync generate demo.jsonl --count 100000
-	PYTHONPATH=src python3 -m qsync sync demo.jsonl demo.db --batch-size 5000
+install:
+	$(PIP) install .
+
+test: install
+	$(PYTHON) -m unittest discover -s tests -v
+
+compile:
+	$(PYTHON) -m compileall -q src tests
+
+check: compile test
+
+demo: install
+	$(PYTHON) -m qsync init-demo demo-source.db --count 1000
+	$(PYTHON) -m qsync sync demo-source.db demo-target.db --batch-size 500
+	$(PYTHON) -m qsync status demo-target.db
 
 clean:
-	rm -f demo.jsonl demo.db demo.db-shm demo.db-wal
-
+	rm -f demo-source.db demo-source.db-shm demo-source.db-wal
+	rm -f demo-target.db demo-target.db-shm demo-target.db-wal
