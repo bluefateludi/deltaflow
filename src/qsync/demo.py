@@ -44,6 +44,8 @@ def init_demo(
                 amount NUMERIC NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_orders_updated_at_id
+                ON orders(updated_at, id);
             CREATE TABLE IF NOT EXISTS _deltaflow_demo (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 next_order INTEGER NOT NULL,

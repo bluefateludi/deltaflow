@@ -23,6 +23,7 @@ CREATE TABLE orders (
   amount NUMERIC NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE INDEX idx_orders_updated_at_id ON orders(updated_at, id);
 ```
 
 每次调度读取 checkpoint 之后的页，目标端按 `id` upsert，并在同一事务内保存
@@ -53,11 +54,15 @@ SQLite orders source
 `(updated_at, id)` 作稳定复合游标：
 
 ```sql
-WHERE updated_at > :updated_at
-   OR (updated_at = :updated_at AND id > :id)
+WHERE (updated_at, id) > (:updated_at, :id)
 ORDER BY updated_at, id
 LIMIT :batch_size
 ```
+
+Demo 和 benchmark 生成的 source schema 会创建该复合索引，使增量页能从
+checkpoint 边界做索引搜索，并直接按页面所需顺序返回。Connector 不会为
+任意 source 数据库自动创建或修改索引；生产 source 应由 schema migration
+显式管理该索引。
 
 ## 60 秒 demo
 

@@ -33,7 +33,10 @@ class SQLiteOrderSource:
             raise ValueError("source_id must not be empty")
         self.source_id = source_id or f"sqlite:orders:{self.database}"
 
-    def read_batch(self, cursor: Cursor | None, batch_size: int) -> Batch:
+    @staticmethod
+    def _read_query(
+        cursor: Cursor | None, batch_size: int
+    ) -> tuple[str, tuple[object, ...]]:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
 
@@ -49,17 +52,31 @@ class SQLiteOrderSource:
             sql = """
                 SELECT id, customer_id, status, amount, updated_at
                 FROM orders
-                WHERE updated_at > ?
-                   OR (updated_at = ? AND id > ?)
+                WHERE (updated_at, id) > (?, ?)
                 ORDER BY updated_at, id
                 LIMIT ?
             """
             parameters = (
                 cursor.updated_at,
-                cursor.updated_at,
                 cursor.id,
                 batch_size,
             )
+        return sql, parameters
+
+    def explain_query_plan(
+        self, cursor: Cursor | None, batch_size: int
+    ) -> tuple[str, ...]:
+        """Return SQLite's read-only plan details for the requested source page."""
+
+        sql, parameters = self._read_query(cursor, batch_size)
+        with _connect(self.database) as connection:
+            rows = connection.execute(
+                f"EXPLAIN QUERY PLAN {sql}", parameters
+            ).fetchall()
+        return tuple(str(row[3]) for row in rows)
+
+    def read_batch(self, cursor: Cursor | None, batch_size: int) -> Batch:
+        sql, parameters = self._read_query(cursor, batch_size)
 
         with _connect(self.database) as connection:
             rows = connection.execute(sql, parameters).fetchall()

@@ -59,10 +59,11 @@ def timestamp(index: int) -> str:
 
 def create_source(path: Path) -> None:
     with sqlite3.connect(path) as connection:
-        connection.execute(
+        connection.executescript(
             "CREATE TABLE orders("
             "id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, "
-            "status TEXT NOT NULL, amount NUMERIC NOT NULL, updated_at TEXT NOT NULL)"
+            "status TEXT NOT NULL, amount NUMERIC NOT NULL, updated_at TEXT NOT NULL);"
+            "CREATE INDEX idx_orders_updated_at_id ON orders(updated_at, id);"
         )
 
 
