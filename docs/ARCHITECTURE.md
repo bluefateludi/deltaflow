@@ -1,6 +1,6 @@
 # DeltaFlow architecture
 
-DeltaFlow is a lightweight incremental synchronization CLI for teams that need
+DeltaFlow is a lightweight incremental synchronization core for teams that need
 reliable scheduled data movement without operating a full CDC platform.
 
 The reference use case copies an operational `orders` table into a local
